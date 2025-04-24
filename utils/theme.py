@@ -39,17 +39,9 @@ async def list_themes() -> Dict[str, Any]:
                 continue
 
             theme_path = link_elem.get("href", "")
-            theme_url = (
-                f"https://github.com/gohugoio/hugoThemes/tree/master/themes{theme_path}"
-            )
+            theme_url = f"https://themes.gohugo.io{theme_path}"
 
-            # Extract theme image
-            img_elem = item.select_one("img")
-            img_url = None
-            if img_elem and img_elem.get("src"):
-                img_url = f"https://themes.gohugo.io{img_elem['src']}"
-
-            themes.append({"name": theme_name, "url": theme_url, "image": img_url})
+            themes.append({"name": theme_name, "detail_url": theme_url})
 
         return {
             "status": "success",
@@ -69,31 +61,34 @@ async def list_themes() -> Dict[str, Any]:
 
 
 async def install_theme(
-    site_path: str, theme_name: str, theme_url: str, use_go_module: bool = False
+    site_root_path: str,
+    theme_name: str,
+    theme_git_url: str,
+    use_go_module: bool = False,
 ) -> Dict[str, Any]:
     try:
         # Validate site path
-        if not os.path.isdir(site_path):
+        if not os.path.isdir(site_root_path):
             return {
                 "status": "error",
-                "message": f"Site path '{site_path}' does not exist",
+                "message": f"Site path '{site_root_path}' does not exist",
             }
 
         # Change to site directory
-        os.chdir(site_path)
+        os.chdir(site_root_path)
 
         # Install the theme
         if use_go_module:
             # Initialize Hugo modules if not already initialized
             if not os.path.exists("go.mod"):
                 # Extract username and project from site_path
-                site_name = os.path.basename(os.path.normpath(site_path))
+                site_name = os.path.basename(os.path.normpath(site_root_path))
                 subprocess.run(
                     ["hugo", "mod", "init", f"github.com/{site_name}"], check=True
                 )
 
             # Add the theme as a module
-            subprocess.run(["hugo", "mod", "get", theme_url], check=True)
+            subprocess.run(["hugo", "mod", "get", theme_git_url], check=True)
 
             # Update config to use the theme via module imports
             config_files = ["config.toml", "hugo.toml", "config.yaml", "hugo.yaml"]
@@ -114,7 +109,7 @@ async def install_theme(
                         if "[module]" not in content:
                             new_lines.append("\n[module]")
                             new_lines.append("  [[module.imports]]")
-                            new_lines.append(f'    path = "{theme_url}"')
+                            new_lines.append(f'    path = "{theme_git_url}"')
 
                         with open(config_file, "w") as f:
                             f.write("\n".join(new_lines))
@@ -136,12 +131,15 @@ async def install_theme(
                         # Check if the theme is already in imports
                         theme_in_imports = False
                         for imp in config["module"]["imports"]:
-                            if isinstance(imp, dict) and imp.get("path") == theme_url:
+                            if (
+                                isinstance(imp, dict)
+                                and imp.get("path") == theme_git_url
+                            ):
                                 theme_in_imports = True
                                 break
 
                         if not theme_in_imports:
-                            config["module"]["imports"].append({"path": theme_url})
+                            config["module"]["imports"].append({"path": theme_git_url})
 
                         with open(config_file, "w") as f:
                             yaml.dump(
@@ -157,7 +155,7 @@ async def install_theme(
 
             # Add the theme as a git submodule
             subprocess.run(
-                ["git", "submodule", "add", theme_url, f"themes/{theme_name}"],
+                ["git", "submodule", "add", theme_git_url, f"themes/{theme_name}"],
                 check=True,
             )
 
@@ -206,18 +204,18 @@ async def install_theme(
 
 
 async def update_theme(
-    site_path: str, theme_name: str, use_modules: bool = False
+    site_root_path: str, theme_name: str, use_modules: bool = False
 ) -> Dict[str, Any]:
     try:
         # Validate site path
-        if not os.path.isdir(site_path):
+        if not os.path.isdir(site_root_path):
             return {
                 "status": "error",
-                "message": f"Site path '{site_path}' does not exist",
+                "message": f"Site path '{site_root_path}' does not exist",
             }
 
         # Change to site directory
-        os.chdir(site_path)
+        os.chdir(site_root_path)
 
         # Update the theme
         if use_modules:
@@ -237,60 +235,24 @@ async def update_theme(
         return {"status": "error", "message": f"Unexpected error: {str(e)}"}
 
 
-async def get_theme_details(theme_name: str) -> Dict[str, Any]:
+async def get_theme_details(detail_url: str) -> Dict[str, Any]:
     try:
-        # First, get the list of themes
-        themes_result = await list_themes()
-        if themes_result["status"] != "success":
-            return {"status": "error", "message": "Failed to fetch themes list"}
-
-        # Find the theme in the list
-        theme_info = None
-        for theme in themes_result["themes"]:
-            if theme["name"].lower() == theme_name.lower():
-                theme_info = theme
-                break
-
-        if not theme_info:
-            return {
-                "status": "error",
-                "message": f"Theme '{theme_name}' not found on the Hugo themes website",
-            }
-
-        # Extract the theme path from the URL
-        theme_path = theme_info["url"].split("/themes/")[-1]
-
-        # Now fetch the theme's detail page
-        detail_url = f"https://themes.gohugo.io/themes/{theme_path}/"
+        # Fetch the theme's detail page
         detail_response = requests.get(detail_url)
-
         if detail_response.status_code != 200:
             return {
-                "status": "partial",
-                "message": "Could not fetch theme details page",
-                "theme": theme_info,
+                "status": "error",
+                "message": f"Could not fetch theme details: HTTP {detail_response.status_code}",
             }
 
         # Parse the detail page
         detail_soup = BeautifulSoup(detail_response.text, "html.parser")
 
-        # Extract theme description
-        description = ""
-        desc_elem = detail_soup.select_one("div.prose p")
-        if desc_elem:
-            description = desc_elem.text.strip()
-
-        # Extract theme features
-        features = []
-        feature_elems = detail_soup.select("div.prose ul li")
-        for elem in feature_elems:
-            features.append(elem.text.strip())
-
-        # Extract theme tags
-        tags = []
-        tag_elems = detail_soup.select("div.flex.flex-wrap.gap-2 a")
-        for elem in tag_elems:
-            tags.append(elem.text.strip())
+        # Extract theme name
+        name = ""
+        name_elem = detail_soup.select_one("h1")
+        if name_elem:
+            name = name_elem.text.strip()
 
         # Extract GitHub repository
         github_url = None
@@ -324,17 +286,13 @@ async def get_theme_details(theme_name: str) -> Dict[str, Any]:
                 if next_elem and next_elem.name in ["p", "div"]:
                     installation = next_elem.text.strip()
 
-        # Combine basic info with detailed info
-        theme_info.update(
-            {
-                "description": description,
-                "features": features,
-                "tags": tags,
-                "github_url": github_url,
-                "demo_url": demo_url,
-                "installation": installation,
-            }
-        )
+        theme_info = {
+            "name": name,
+            "detail_url": detail_url,
+            "github_url": github_url,
+            "demo_url": demo_url,
+            "installation": installation,
+        }
 
         return {"status": "success", "theme": theme_info}
     except requests.RequestException as e:
