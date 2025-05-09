@@ -6,15 +6,15 @@ from typing import Dict, Any, Optional
 
 
 async def create_site(
-    site_abs_path: str,
+    site_parent_path: str,
     site_name: str,
+    initialize_in_parent_dir: bool = False,
     force: bool = False,
-    in_current_dir: bool = False,
 ) -> Dict[str, Any]:
     try:
         # Convert paths to Path objects
-        site_abs_path = Path(site_abs_path)
-        target_path = site_abs_path / site_name if not in_current_dir else site_abs_path
+        site_parent_path = Path(site_parent_path).expanduser().resolve().absolute()
+        target_path = site_parent_path / site_name if not initialize_in_parent_dir else site_parent_path
 
         # Create target directory if it doesn't exist
         target_path.mkdir(parents=True, exist_ok=True)
@@ -24,7 +24,7 @@ async def create_site(
         has_only_git = len(contents) == 1 and contents[0].name == ".git"
         is_empty = len(contents) == 0
 
-        if in_current_dir:
+        if initialize_in_parent_dir:
             # Case: Initialize in current directory
             if not (is_empty or has_only_git):
                 if not force:
@@ -53,7 +53,7 @@ async def create_site(
                     }
 
             # Change to parent directory
-            os.chdir(site_abs_path)
+            os.chdir(site_parent_path)
             cmd = ["hugo", "new", "site", site_name]
             if force:
                 cmd.append("--force")
@@ -65,7 +65,7 @@ async def create_site(
             "status": "success",
             "path": str(target_path),
             "message": result.stdout.strip(),
-            "in_current_dir": in_current_dir,
+            "in_current_dir": initialize_in_parent_dir,
         }
 
     except subprocess.CalledProcessError as e:
